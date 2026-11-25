@@ -167,23 +167,30 @@ def _pdf(data: bytes) -> Extracted:
 # Latin (incl. Czech), Greek, Cyrillic, general punctuation, currency (€). Binary garbage from
 # QR codes and embedded data decodes mostly to symbols, braille and CJK, which count as noise.
 _READABLE_RANGES = ((0x20, 0x530), (0x2000, 0x20CF), (0x2100, 0x215F))
-_CONTROL = {chr(c) for c in range(32)} - {"\n", "\t"}
+_CONTROL = {chr(c) for c in range(32)} - {"\n", "\t"}  # DEL and C1 are left for _is_noise to catch
 
 
 def _is_noise(line: str) -> bool:
     stripped = line.strip()
     if len(stripped) < 6:
         return False
+    if any(0x7F <= ord(ch) <= 0x9F for ch in stripped):  # DEL / C1 controls never occur in real text
+        return True
     readable = sum(1 for ch in stripped if ch.isspace() or any(lo <= ord(ch) <= hi for lo, hi in _READABLE_RANGES))
-    return readable / len(stripped) < 0.7
+    if readable / len(stripped) < 0.7:
+        return True
+    # ASCII garbage (e.g. a QR code decoded as text): dense with symbols, unlike prose or numbers
+    symbols = sum(1 for ch in stripped if not ch.isalnum() and not ch.isspace() and ch not in ".,:;-–—/()%€…_")  # dots/underscores = form fields
+    return len(stripped) >= 12 and symbols / len(stripped) > 0.2
 
 
 def clean_text(text: str) -> tuple[str, int]:
     """Drop control characters and lines that are mostly binary garbage. Returns (text, dropped lines)."""
-    text = "".join(ch for ch in text if ch not in _CONTROL and ch != "\ufffd")
     kept, dropped = [], 0
-    for line in text.splitlines():
-        if _is_noise(line):
+    for line in text.split("\n"):
+        controls = sum(1 for ch in line if ch in _CONTROL)
+        line = "".join(ch for ch in line if ch not in _CONTROL and ch != "\ufffd")
+        if controls >= 2 or _is_noise(line):  # binary data decoded as text carries control bytes
             dropped += 1
         else:
             kept.append(line)

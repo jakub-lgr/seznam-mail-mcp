@@ -287,6 +287,14 @@ def test_clean_text_drops_binary_noise_keeps_languages():
         "Vyúčtování\nCelkem: 49,90 €\nДоговір оренди\n\x01ÿĀ漢字ꙮ⣿⣿⣿⣷⣄⡀⢀⣤⣶\nkůň"
     )
     assert text == "Vyúčtování\nCelkem: 49,90 €\nДоговір оренди\nkůň" and dropped == 1
+    qr_ascii = "#y#R;?gApw!)?zzJ0{B!`$n0/#11\nCwUq1+-cVCqK2Sl=y;Wgwg'@?ckM\x7fcChE"
+    real = (
+        "IČ: 649 49 681, DIČ: CZ64949681\nDPH (21%) 123,45 Kč\nhttps://www.example.cz/faktura?id=1\n"
+        "petr.novak@example.cz\nAdresa trvalého bydliště: ………………………………………\nV (město)______________, dne: ________\n"
+        "_______________________"
+    )
+    text, dropped = attachments.clean_text(real + "\n" + qr_ascii)
+    assert text == real and dropped == 2
 
 
 def test_count_attachments_from_bodystructure():
@@ -296,6 +304,21 @@ def test_count_attachments_from_bodystructure():
     assert mail.count_attachments(bodystructure(parse(raw))) == 2
     assert mail.count_attachments(bodystructure(parse(with_attachments()))) == 0
     assert mail.count_attachments(None) == 0
+
+    # HTML newsletter: logo embedded in multipart/related is not an attachment, the PDF is
+    html = EmailMessage()
+    html.set_content("<p>Faktura</p><img src='cid:logo'>", subtype="html")
+    html.add_related(make_png(10, 10), maintype="image", subtype="png", cid="<logo>", filename="logo.png")
+    html.add_attachment(b"%PDF", maintype="application", subtype="pdf", filename="f.pdf")
+    msg = parse(html.as_bytes(policy=policy.SMTP))
+    assert mail.count_attachments(bodystructure(msg)) == len(mail.extract_attachments(msg)) == 1
+
+    # whole message is multipart/related: embedded images are listed (and counted) as attachments
+    only_related = EmailMessage()
+    only_related.set_content("<p>Platba</p>", subtype="html")
+    only_related.add_related(make_png(10, 10), maintype="image", subtype="png", cid="<logo>", filename="logo.png")
+    msg = parse(only_related.as_bytes(policy=policy.SMTP))
+    assert mail.count_attachments(bodystructure(msg)) == len(mail.extract_attachments(msg)) == 1
 
 
 async def test_move_finds_new_uid_without_copyuid(monkeypatch, client):

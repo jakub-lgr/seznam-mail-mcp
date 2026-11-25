@@ -172,12 +172,18 @@ def _lower(value: Any) -> str:
     return value.decode(errors="replace").lower() if isinstance(value, bytes) else str(value or "").lower()
 
 
-def count_attachments(bs: Any) -> int:
-    """Count attachments from an IMAP BODYSTRUCTURE without downloading the message."""
+def count_attachments(bs: Any, _in_related: bool = False, _root: bool = True) -> int:
+    """Count attachments from an IMAP BODYSTRUCTURE without downloading the message.
+
+    Matches what read_email lists (Python's iter_attachments): a multipart/related nested
+    in the message is the HTML body with its embedded images (logos) and counts as nothing;
+    when the whole message is multipart/related, its non-text parts are listed and counted.
+    """
     if not bs:
         return 0
     if isinstance(bs[0], list):  # multipart: ([parts], subtype, ...)
-        return sum(count_attachments(part) for part in bs[0])
+        related = _lower(bs[1] if len(bs) > 1 else b"") == "related" and not _root
+        return sum(count_attachments(part, related or _in_related, False) for part in bs[0])
     maintype, subtype = _lower(bs[0]), _lower(bs[1] if len(bs) > 1 else b"")
     if (maintype, subtype) == ("message", "rfc822"):
         return 1  # attached e-mail
@@ -186,6 +192,8 @@ def count_attachments(bs: Any) -> int:
     disp = bs[disp_index] if len(bs) > disp_index else None
     disp_type = _lower(disp[0]) if isinstance(disp, (tuple, list)) and disp else ""
     disp_params = _pairs(disp[1]) if disp_type and len(disp) > 1 else {}
+    if _in_related:  # part of an HTML body, like Python's iter_attachments() treats it
+        return 0
     if disp_type == "attachment":
         return 1
     named = "name" in params or "filename" in disp_params
