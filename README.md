@@ -78,4 +78,8 @@ python -m seznam_mail_mcp.db init
 
 Vzor konfigurace je v [.env.example](.env.example).
 
-> Stav: ve vývoji. Návrh je v [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Návrh a známé zvláštnosti Seznam IMAPu jsou v [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Licence
+
+[MIT](LICENSE)
