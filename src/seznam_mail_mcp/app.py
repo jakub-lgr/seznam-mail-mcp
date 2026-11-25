@@ -62,11 +62,12 @@ def build_http_app(settings: Settings, engine: AsyncEngine | None = None) -> Htt
             raise ToolError("Uložené přihlašovací údaje nejde přečíst. Připoj e-mail znovu.") from None
         if user.last_used_at is None or utcnow() - user.last_used_at > TOUCH_INTERVAL:
             await store.touch_user(user.id)
-        return MailAccount(user.email, password, settings.imap_host, settings.imap_port)
+        return MailAccount(user.email, password, settings.imap_host, settings.imap_port, settings.smtp_host, settings.smtp_port)
 
     public = urlparse(settings.public_url)
     server = build_server(
         resolve_account,
+        settings.tools,
         auth_server_provider=provider,
         auth=AuthSettings(
             issuer_url=settings.public_url,

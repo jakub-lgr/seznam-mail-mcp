@@ -64,6 +64,19 @@ def client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def permissions_text(settings: Settings) -> str:
+    can = ["číst e-maily a přílohy", "ukládat koncepty"]
+    if settings.tools.enable_organize:
+        can.append("označovat, přesouvat a mazat e-maily do Koše")
+    if settings.tools.enable_send:
+        can.append("odesílat e-maily")
+    text = "Aplikace bude moct " + ", ".join(can[:-1]) + " a " + can[-1] + "."
+    text += " Trvale nic smazat nemůže." if settings.tools.enable_organize else " Nemůže nic smazat."
+    if not settings.tools.enable_send:
+        text += " Nemůže nic odeslat."
+    return text
+
+
 def install_routes(server: MCPServer, provider: SeznamAuthProvider, store: Store, box: SecretBox, settings: Settings) -> None:
     async def too_many_failures(email: str | None, ip: str | None) -> bool:
         if ip and await store.recent_failures(ip=ip, window=FAILURE_WINDOW) >= MAX_FAILURES_PER_IP:
@@ -76,7 +89,7 @@ def install_routes(server: MCPServer, provider: SeznamAuthProvider, store: Store
             "Přihlášení k e-mailu",
             f"""<h1>Připojit e-mail na Seznamu</h1>
 <p><strong>{_e(client_name)}</strong> chce přístup k tvé schránce.</p>
-<div class=box><p class=muted>Aplikace bude moct číst e-maily a ukládat koncepty. Nemůže nic odeslat ani smazat.</p>
+<div class=box><p class=muted>{_e(permissions_text(settings))}</p>
 <p class=muted>Po přihlášení tě pošlu zpátky na <code>{_e(redirect_host)}</code>.</p></div>
 {err}
 <form method=post action=/login autocomplete=on>

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,6 +17,20 @@ DEFAULT_REDIRECT_URIS = (
     "https://claude.com/api/mcp/auth_callback",
     "https://chatgpt.com/connector_platform_oauth_redirect",
 )
+
+
+@dataclass(frozen=True)
+class ToolOptions:
+    """Which write tools are offered and their limits (same for stdio and HTTP mode)."""
+
+    enable_organize: bool = True
+    """mark_emails, move_emails, trash_emails"""
+    enable_send: bool = True
+    """send_email, send_draft"""
+    send_daily_limit: int = 50
+    """sent e-mails per user in any 24 hours (0 = no limit)"""
+    save_sent_copy: bool = True
+    """append a copy of each sent e-mail to the Sent folder"""
 
 
 @dataclass(frozen=True)
@@ -35,6 +49,9 @@ class Settings:
     refresh_token_ttl: int = 180 * 24 * 3600  # sliding: renewed on every refresh
     imap_host: str = "imap.seznam.cz"
     imap_port: int = 993
+    smtp_host: str = "smtp.seznam.cz"
+    smtp_port: int = 465
+    tools: ToolOptions = field(default_factory=ToolOptions)
     allowed_origins: tuple[str, ...] = ()
     """Extra Origin header values accepted on /mcp (browser-based clients)."""
 
@@ -82,6 +99,15 @@ def _list(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(v.strip() for v in value.split(",") if v.strip())
 
 
+def load_tool_options(env: os._Environ | dict = os.environ) -> ToolOptions:
+    return ToolOptions(
+        enable_organize=_bool(env.get("ENABLE_ORGANIZE"), True),
+        enable_send=_bool(env.get("ENABLE_SEND"), True),
+        send_daily_limit=int(env.get("SEND_DAILY_LIMIT") or 50),
+        save_sent_copy=_bool(env.get("SAVE_SENT_COPY"), True),
+    )
+
+
 def load_settings(env_file: str | os.PathLike | None = None) -> Settings:
     load_dotenv(env_file or ".env", override=False)
     env = os.environ
@@ -100,5 +126,8 @@ def load_settings(env_file: str | os.PathLike | None = None) -> Settings:
         refresh_token_ttl=int(env.get("REFRESH_TOKEN_TTL", str(180 * 24 * 3600))),
         imap_host=env.get("IMAP_HOST", "imap.seznam.cz"),
         imap_port=int(env.get("IMAP_PORT", "993")),
+        smtp_host=env.get("SMTP_HOST", "smtp.seznam.cz"),
+        smtp_port=int(env.get("SMTP_PORT", "465")),
+        tools=load_tool_options(env),
         allowed_origins=_list(env.get("ALLOWED_ORIGINS"), ()),
     )

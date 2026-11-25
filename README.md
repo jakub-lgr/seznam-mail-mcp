@@ -7,7 +7,7 @@ asistenty (Claude, ChatGPT a další MCP klienty) s e-mailovou schránkou na
 - Běží na vlastním serveru, přihlašovací údaje nejdou přes žádnou cizí službu.
 - Podporuje víc uživatelů: každý se přihlásí svým e-mailem a heslem pro aplikaci,
   přístup omezuje allowlist.
-- Ve výchozím stavu jen čte a vytváří koncepty. Nic neodesílá ani nemaže.
+- Čte e-maily i přílohy, třídí, maže do Koše a odesílá. Trvale nic nemaže.
 
 ## Nástroje
 
@@ -17,7 +17,18 @@ asistenty (Claude, ChatGPT a další MCP klienty) s e-mailovou schránkou na
 | `search_emails` | hledání podle odesílatele, příjemce, předmětu, textu, data, nepřečtených |
 | `read_email` | text e-mailu a seznam příloh (neoznačí jako přečtený) |
 | `read_thread` | celé vlákno včetně odeslaných odpovědí |
+| `read_attachment` | obsah přílohy: PDF (naskenované stránky jako obrázek), Word, Excel, text/CSV, obrázky, přeposlané e-maily |
 | `create_draft` | uloží koncept nebo odpověď do Konceptů (neodesílá) |
+| `mark_emails` | označí jako přečtené/nepřečtené, přidá/odebere hvězdičku |
+| `move_emails` | přesune do jiné složky (např. archiv) |
+| `trash_emails` | přesune do Koše (trvale nemaže nic) |
+| `send_email` | odešle e-mail nebo odpověď, kopie se uloží do Odeslaných |
+| `send_draft` | odešle existující koncept |
+
+Zápisové nástroje jdou vypnout v `.env` (`ENABLE_ORGANIZE=false`, `ENABLE_SEND=false`).
+Odesílání má limit 20 adresátů na e-mail a 50 e-mailů za 24 hodin na uživatele (`SEND_DAILY_LIMIT`).
+V klientovi (Claude, ChatGPT) doporučujeme u `send_email`, `send_draft` a `trash_emails`
+nechat oprávnění „vždy se zeptat“.
 
 ## Instalace
 

@@ -1,12 +1,15 @@
-"""IMAP access to a Seznam.cz mailbox (synchronous; call from a worker thread).
+"""IMAP/SMTP access to a Seznam.cz mailbox (synchronous; call from a worker thread).
 
 Messages are always read with BODY.PEEK, so reading never marks them as seen.
-The only write operation is appending a draft to the Drafts folder.
+Write operations: drafts, flags (read/starred), moving (incl. to trash) and sending.
+Nothing is ever permanently deleted, except a draft right after it was sent.
 """
 
 from __future__ import annotations
 
 import re
+import smtplib
+import socket
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,7 +27,11 @@ from .htmltext import html_to_text
 
 IMAP_HOST = "imap.seznam.cz"
 IMAP_PORT = 993
+SMTP_HOST = "smtp.seznam.cz"
+SMTP_PORT = 465
 TIMEOUT = 30
+MAX_BATCH = 100  # messages per flag/move call
+MAX_RECIPIENTS = 20  # To + Cc + Bcc of one sent e-mail
 
 HEADER_FIELDS = "FROM TO CC SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES"
 _HEADER_FETCH = f"BODY.PEEK[HEADER.FIELDS ({HEADER_FIELDS})]"
@@ -56,6 +63,8 @@ class MailAccount:
     password: str
     imap_host: str = IMAP_HOST
     imap_port: int = IMAP_PORT
+    smtp_host: str = SMTP_HOST
+    smtp_port: int = SMTP_PORT
 
     def __repr__(self) -> str:  # never leak the password into logs
         return f"MailAccount({self.email!r})"
@@ -170,18 +179,28 @@ def extract_body(msg: EmailMessage) -> tuple[str, str]:
     return text.strip(), "plain"
 
 
+def attachment_parts(msg: EmailMessage) -> list[EmailMessage]:
+    return list(msg.iter_attachments())  # type: ignore[arg-type]
+
+
+def _part_size(part: Message) -> int:
+    if part.get_content_type() == "message/rfc822":
+        inner = part.get_payload()
+        inner = inner[0] if isinstance(inner, list) and inner else inner
+        return len(inner.as_bytes()) if isinstance(inner, Message) else 0
+    return len(part.get_payload(decode=True) or b"")
+
+
 def extract_attachments(msg: EmailMessage) -> list[dict[str, Any]]:
-    out = []
-    for part in msg.iter_attachments():
-        payload = part.get_payload(decode=True) or b""
-        out.append(
-            {
-                "filename": part.get_filename() or "(bez názvu)",
-                "content_type": part.get_content_type(),
-                "size": len(payload),
-            }
-        )
-    return out
+    return [
+        {
+            "index": i,
+            "filename": part.get_filename() or "(bez názvu)",
+            "content_type": part.get_content_type(),
+            "size": _part_size(part),
+        }
+        for i, part in enumerate(attachment_parts(msg), start=1)
+    ]
 
 
 def truncate(text: str, max_chars: int) -> tuple[str, bool]:
@@ -190,9 +209,9 @@ def truncate(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:max_chars], True
 
 
-def _select(client: IMAPClient, folder: str) -> None:
+def _select(client: IMAPClient, folder: str, readonly: bool = True) -> None:
     try:
-        client.select_folder(folder, readonly=True)
+        client.select_folder(folder, readonly=readonly)
     except IMAPClientError as e:
         raise MailError(f"Složka '{folder}' neexistuje nebo ji nejde otevřít. Použij list_folders.") from e
 
@@ -236,6 +255,13 @@ def _is_ascii(s: str) -> bool:
         return True
     except UnicodeEncodeError:
         return False
+
+
+# public names for other modules
+parse_message = _parse
+header = _hdr
+addresses = _addresses
+date_iso = _date_iso
 
 
 # ---------------------------------------------------------------- operations
@@ -517,4 +543,274 @@ def create_draft(
             "cc": cc or [],
             "subject": msg["Subject"],
             "in_reply_to": msg.get("In-Reply-To"),
+        }
+
+
+# ---------------------------------------------------------------- attachments
+
+
+def get_attachment(account: MailAccount, folder: str, uid: int, index: int) -> tuple[dict[str, Any], EmailMessage]:
+    """Return (info, part) for the index-th attachment (1-based, as listed by read_email)."""
+    with connect(account) as client:
+        _select(client, folder)
+        msg, _ = _fetch_full(client, uid)
+    parts = attachment_parts(msg)
+    if not 1 <= index <= len(parts):
+        raise MailError(f"E-mail má {len(parts)} příloh, index {index} neexistuje." if parts else "E-mail nemá žádné přílohy.")
+    return extract_attachments(msg)[index - 1], parts[index - 1]
+
+
+# ---------------------------------------------------------------- organising
+
+
+def _check_batch(uids: list[int]) -> list[int]:
+    uids = list(dict.fromkeys(uids))
+    if not uids:
+        raise MailError("Chybí UID zpráv.")
+    if len(uids) > MAX_BATCH:
+        raise MailError(f"Najednou jde zpracovat nejvýš {MAX_BATCH} zpráv.")
+    return uids
+
+
+def _existing(client: IMAPClient, uids: list[int]) -> tuple[list[int], list[int]]:
+    found = set(client.fetch(uids, ["FLAGS"]).keys())
+    return [u for u in uids if u in found], [u for u in uids if u not in found]
+
+
+def set_flags(
+    account: MailAccount, folder: str, uids: list[int], *, read: bool | None = None, flagged: bool | None = None
+) -> dict[str, Any]:
+    uids = _check_batch(uids)
+    if read is None and flagged is None:
+        raise MailError("Zadej read nebo flagged.")
+    with connect(account) as client:
+        _select(client, folder, readonly=False)
+        ok, missing = _existing(client, uids)
+        if ok:
+            for value, flag in ((read, b"\\Seen"), (flagged, b"\\Flagged")):
+                if value is True:
+                    client.add_flags(ok, [flag], silent=True)
+                elif value is False:
+                    client.remove_flags(ok, [flag], silent=True)
+            data = client.fetch(ok, ["FLAGS"])
+        else:
+            data = {}
+        result = []
+        for u in ok:
+            flags = [f.decode() if isinstance(f, bytes) else str(f) for f in data.get(u, {}).get(b"FLAGS", ())]
+            result.append({"uid": u, "unread": "\\Seen" not in flags, "flagged": "\\Flagged" in flags})
+        return {"folder": folder, "updated": result, "not_found": missing}
+
+
+_UIDSET = re.compile(r"COPYUID \d+ ([\d:,]+) ([\d:,]+)")
+
+
+def _expand_uid_set(spec: str) -> list[int]:
+    out: list[int] = []
+    for chunk in spec.split(","):
+        a, _, b = chunk.partition(":")
+        lo, hi = int(a), int(b or a)
+        out.extend(range(lo, hi + 1) if lo <= hi else range(lo, hi - 1, -1))
+    return out
+
+
+def _copyuid_map(response: Any) -> dict[int, int]:
+    text = response.decode(errors="replace") if isinstance(response, bytes) else str(response or "")
+    m = _UIDSET.search(text)
+    if not m:
+        return {}
+    old, new = _expand_uid_set(m.group(1)), _expand_uid_set(m.group(2))
+    return dict(zip(old, new)) if len(old) == len(new) else {}
+
+
+def _resolve_target(client: IMAPClient, target: str) -> str:
+    """A folder name, or a role: inbox, archive, trash, spam."""
+    names = [name for flags, _d, name in client.list_folders() if b"\\Noselect" not in flags]
+    if target in names:
+        return target
+    role = target.strip().lower()
+    if role == "inbox":
+        return "INBOX"
+    if role in _ROLE_FLAGS:
+        found = find_folder(client, role)
+        if found:
+            return found
+    lowered = {n.lower(): n for n in names}
+    if role in lowered:
+        return lowered[role]
+    raise MailError(f"Cílová složka '{target}' neexistuje. Použij list_folders.")
+
+
+def move_messages(account: MailAccount, folder: str, uids: list[int], target: str) -> dict[str, Any]:
+    uids = _check_batch(uids)
+    with connect(account) as client:
+        dest = _resolve_target(client, target)
+        if dest == folder:
+            raise MailError(f"Zprávy už jsou ve složce '{dest}'.")
+        _select(client, folder, readonly=False)
+        ok, missing = _existing(client, uids)
+        mapping: dict[int, int] = {}
+        if ok:
+            if client.has_capability("MOVE"):
+                resp = client.move(ok, dest)
+            else:  # COPY + \Deleted + UID EXPUNGE of just these messages
+                resp = client.copy(ok, dest)
+                client.add_flags(ok, [b"\\Deleted"], silent=True)
+                client.uid_expunge(ok)
+            mapping = _copyuid_map(resp)
+        return {
+            "from_folder": folder,
+            "to_folder": dest,
+            "moved": [{"uid": u, "new_uid": mapping.get(u)} for u in ok],
+            "not_found": missing,
+        }
+
+
+def trash_messages(account: MailAccount, folder: str, uids: list[int]) -> dict[str, Any]:
+    with connect(account) as client:
+        trash = find_folder(client, "trash")
+    if not trash:
+        raise MailError("Nenašel jsem složku Koš.")
+    if folder == trash:
+        raise MailError("Zprávy už jsou v Koši. Trvalé mazání server záměrně neumí.")
+    return move_messages(account, folder, uids, trash)
+
+
+# ---------------------------------------------------------------- sending
+
+
+def _recipients(msg: Message) -> list[str]:
+    out = []
+    for name in ("To", "Cc", "Bcc"):
+        out += [addr for _d, addr in getaddresses(msg.get_all(name, [])) if addr]
+    return list(dict.fromkeys(a.strip() for a in out))
+
+
+_ADDR = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$")
+
+
+def _check_recipients(recipients: list[str]) -> None:
+    if not recipients:
+        raise MailError("Chybí adresát (to).")
+    bad = [r for r in recipients if not _ADDR.match(r)]
+    if bad:
+        raise MailError("Neplatná adresa: " + ", ".join(bad))
+    if len(recipients) > MAX_RECIPIENTS:
+        raise MailError(f"Najednou jde poslat nejvýš {MAX_RECIPIENTS} adresátům.")
+
+
+def smtp_send(account: MailAccount, msg: EmailMessage, recipients: list[str]) -> None:
+    try:
+        with smtplib.SMTP_SSL(account.smtp_host, account.smtp_port, timeout=TIMEOUT) as smtp:
+            smtp.login(account.email, account.password)
+            refused = smtp.send_message(msg, from_addr=account.email, to_addrs=recipients)
+    except smtplib.SMTPAuthenticationError as e:
+        raise MailError("Přihlášení k SMTP selhalo. Zkontroluj heslo pro aplikaci.") from e
+    except smtplib.SMTPRecipientsRefused as e:
+        raise MailError("Server odmítl všechny adresáty: " + ", ".join(e.recipients)) from e
+    except smtplib.SMTPSenderRefused as e:
+        raise MailError(f"Server odmítl odesílatele: {e.smtp_error!r}") from e
+    except (smtplib.SMTPException, socket.timeout, OSError) as e:
+        raise MailError(f"Odeslání selhalo: {e}") from e
+    if refused:
+        raise MailError("E-mail odešel, ale tyto adresy server odmítl: " + ", ".join(refused))
+
+
+def _after_send(client: IMAPClient, msg: EmailMessage, save_copy: bool) -> tuple[str | None, list[str]]:
+    """Save a copy to Sent. Errors become warnings: the e-mail has already left."""
+    warnings: list[str] = []
+    if not save_copy:
+        return None, warnings
+    sent = find_folder(client, "sent")
+    if not sent:
+        return None, ["E-mail odešel, ale nenašel jsem složku Odeslané pro uložení kopie."]
+    try:
+        client.append(sent, msg.as_bytes(policy=policy.SMTP), flags=(b"\\Seen",), msg_time=datetime.now(timezone.utc))
+    except IMAPClientError as e:
+        warnings.append(f"E-mail odešel, ale kopie do Odeslaných se neuložila: {e}")
+        return None, warnings
+    return sent, warnings
+
+
+def _mark_answered(client: IMAPClient, folder: str, uid: int, warnings: list[str]) -> None:
+    try:
+        _select(client, folder, readonly=False)
+        client.add_flags([uid], [b"\\Answered"], silent=True)
+    except (IMAPClientError, MailError):
+        warnings.append("Původní e-mail se nepodařilo označit jako zodpovězený.")
+
+
+def send_email(
+    account: MailAccount,
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    reply_folder: str | None = None,
+    reply_uid: int | None = None,
+    save_copy: bool = True,
+) -> dict[str, Any]:
+    with connect(account) as client:
+        original = None
+        if reply_uid is not None:
+            _select(client, reply_folder or "INBOX")
+            original, _ = _fetch_full(client, reply_uid)
+            if not to:
+                to = _addresses(original, "Reply-To") or _addresses(original, "From")
+        msg = build_draft(sender=account.email, to=to, subject=subject, body=body, cc=cc, reply_to_msg=original)
+        recipients = list(dict.fromkeys(_recipients(msg) + [a for _d, a in getaddresses(bcc or []) if a]))
+        _check_recipients(recipients)
+        if not (msg["Subject"] or "").strip():
+            raise MailError("Chybí předmět.")
+        smtp_send(account, msg, recipients)  # Bcc is only in the envelope, never in the headers
+        saved_to, warnings = _after_send(client, msg, save_copy)
+        if original is not None and reply_uid is not None:
+            _mark_answered(client, reply_folder or "INBOX", reply_uid, warnings)
+        return {
+            "sent": True,
+            "to": to,
+            "cc": cc or [],
+            "bcc": bcc or [],
+            "subject": msg["Subject"],
+            "in_reply_to": msg.get("In-Reply-To"),
+            "saved_to": saved_to,
+            "warnings": warnings,
+        }
+
+
+def send_draft(account: MailAccount, uid: int, folder: str | None = None, save_copy: bool = True) -> dict[str, Any]:
+    with connect(account) as client:
+        drafts = find_folder(client, "drafts")
+        folder = folder or drafts
+        if not folder:
+            raise MailError("Nenašel jsem složku s koncepty.")
+        _select(client, folder)
+        msg, flags = _fetch_full(client, uid)
+        if folder != drafts and b"\\Draft" not in flags:
+            raise MailError("Odeslat jde jen koncept (zprávu ze složky Koncepty).")
+        recipients = _recipients(msg)
+        _check_recipients(recipients)
+        del msg["Bcc"]
+        del msg["Date"]
+        msg["Date"] = formatdate(localtime=True)
+        if not msg["Message-ID"]:
+            msg["Message-ID"] = make_msgid(domain=account.email.rsplit("@", 1)[-1])
+        smtp_send(account, msg, recipients)
+        saved_to, warnings = _after_send(client, msg, save_copy)
+        try:  # the draft is now a sent e-mail; remove it like webmail does
+            _select(client, folder, readonly=False)
+            client.add_flags([uid], [b"\\Deleted"], silent=True)
+            client.uid_expunge([uid])
+        except (IMAPClientError, MailError):
+            warnings.append("E-mail odešel, ale koncept se nepodařilo odstranit z Konceptů.")
+        return {
+            "sent": True,
+            "to": _addresses(msg, "To"),
+            "cc": _addresses(msg, "Cc"),
+            "subject": msg["Subject"],
+            "recipients": len(recipients),
+            "saved_to": saved_to,
+            "warnings": warnings,
         }

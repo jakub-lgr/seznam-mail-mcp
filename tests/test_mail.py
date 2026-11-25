@@ -58,7 +58,7 @@ def test_html_to_text():
 def test_extract_body_plain_and_attachments():
     msg = parse(PLAIN)
     assert extract_body(msg) == ("Dobrý den, posílám fakturu.", "plain")
-    assert mail.extract_attachments(msg) == [{"filename": "f.pdf", "content_type": "application/pdf", "size": 5}]
+    assert mail.extract_attachments(msg) == [{"index": 1, "filename": "f.pdf", "content_type": "application/pdf", "size": 5}]
 
 
 def test_extract_body_html():
@@ -93,9 +93,12 @@ def test_account_repr_hides_password():
 class FakeIMAP:
     boxes: dict
     appended: list
+    flags: dict  # (folder, uid) -> set of flags
+    capabilities = (b"MOVE", b"UIDPLUS")
 
     def __init__(self, host, port=None, ssl=True, timeout=None):
         self.selected = None
+        self.readonly = True
 
     def login(self, user, password):
         if password != "ok":
@@ -108,7 +111,50 @@ class FakeIMAP:
         pass
 
     def list_folders(self):
-        return [((b"\\HasNoChildren",), b"/", "INBOX"), ((b"\\Sent",), b"/", "Odeslané"), ((b"\\Drafts",), b"/", "Koncepty")]
+        return [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\Sent",), b"/", "Odeslané"),
+            ((b"\\Drafts",), b"/", "Koncepty"),
+            ((b"\\Trash",), b"/", "Koš"),
+            ((), b"/", "archive"),
+        ]
+
+    def has_capability(self, cap):
+        return cap.encode() in self.capabilities
+
+    def _writable(self):
+        assert not self.readonly, "write on a read-only SELECT"
+
+    def add_flags(self, uids, flags, silent=False):
+        self._writable()
+        for u in uids:
+            self.flags.setdefault((self.selected, u), set()).update(flags)
+
+    def remove_flags(self, uids, flags, silent=False):
+        self._writable()
+        for u in uids:
+            self.flags.setdefault((self.selected, u), set()).difference_update(flags)
+
+    def _put(self, folder, raw, flags=()):
+        box = self.boxes[folder]
+        uid = max(box, default=99) + 1
+        box[uid] = raw
+        self.flags[(folder, uid)] = set(flags)
+        return uid
+
+    def move(self, uids, folder):
+        self._writable()
+        new = []
+        for u in uids:
+            new.append(self._put(folder, self.boxes[self.selected].pop(u), self.flags.pop((self.selected, u), set())))
+        old_set, new_set = ",".join(map(str, uids)), ",".join(map(str, new))
+        return f"[COPYUID 1 {old_set} {new_set}] Move completed".encode()
+
+    def uid_expunge(self, uids):
+        self._writable()
+        for u in uids:
+            if b"\\Deleted" in self.flags.get((self.selected, u), set()):
+                self.boxes[self.selected].pop(u)
 
     def folder_status(self, name, items):
         return {b"MESSAGES": len(self.boxes[name]), b"UNSEEN": 1}
@@ -117,6 +163,7 @@ class FakeIMAP:
         if name not in self.boxes:
             raise mail.IMAPClientError("no such folder")
         self.selected = name
+        self.readonly = readonly
 
     def search(self, criteria, charset=None):
         box = self.boxes[self.selected]
@@ -136,21 +183,49 @@ class FakeIMAP:
         box = self.boxes[self.selected]
         out = {}
         for uid in uids:
+            if uid not in box:
+                continue
             raw = box[uid]
             body = raw.split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n" if any("HEADER" in i for i in items) else raw
-            out[uid] = {b"BODY[]": body, b"FLAGS": (b"\\Seen",) if uid == 1 else (), b"RFC822.SIZE": len(raw)}
+            flags = tuple(self.flags.get((self.selected, uid), ()))
+            out[uid] = {b"BODY[]": body, b"FLAGS": flags, b"RFC822.SIZE": len(raw)}
         return out
 
     def append(self, folder, msg, flags=(), msg_time=None):
         self.appended.append((folder, msg, flags))
+        self._put(folder, msg, flags)
         return b"[APPENDUID 1 77] done"
+
+
+class FakeSMTP:
+    sent: list
+
+    def __init__(self, host, port, timeout=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def login(self, user, password):
+        if password != "ok":
+            raise mail.smtplib.SMTPAuthenticationError(535, b"bad")
+
+    def send_message(self, msg, from_addr=None, to_addrs=None):
+        FakeSMTP.sent.append((msg, from_addr, list(to_addrs)))
+        return {}
 
 
 @pytest.fixture
 def client(monkeypatch):
-    FakeIMAP.boxes = {"INBOX": {1: PLAIN, 2: UNRELATED}, "Odeslané": {5: REPLY}, "Koncepty": {}}
+    FakeIMAP.boxes = {"INBOX": {1: PLAIN, 2: UNRELATED}, "Odeslané": {5: REPLY}, "Koncepty": {}, "Koš": {}, "archive": {}}
+    FakeIMAP.flags = {("INBOX", 1): {b"\\Seen"}}
     FakeIMAP.appended = []
+    FakeSMTP.sent = []
     monkeypatch.setattr(mail, "IMAPClient", FakeIMAP)
+    monkeypatch.setattr(mail.smtplib, "SMTP_SSL", FakeSMTP)
 
     async def resolve(_ctx):
         return MailAccount("me@seznam.cz", "ok")
@@ -167,7 +242,7 @@ async def call(server, name, args=None):
 async def test_tool_list_folders(client):
     res = await call(client, "list_folders")
     roles = {f["name"]: f["role"] for f in res.structured_content["folders"]}
-    assert roles == {"INBOX": "inbox", "Odeslané": "sent", "Koncepty": "drafts"}
+    assert roles == {"INBOX": "inbox", "Odeslané": "sent", "Koncepty": "drafts", "Koš": "trash", "archive": "archive"}
 
 
 async def test_tool_search_and_read(client):

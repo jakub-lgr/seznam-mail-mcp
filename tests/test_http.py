@@ -54,6 +54,7 @@ async def _reset_postgres(url: str) -> None:
 async def server(request, tmp_path: Path, monkeypatch):
     FakeIMAP.boxes = {"INBOX": {1: PLAIN}, "Odeslané": {5: REPLY}, "Koncepty": {}}
     FakeIMAP.appended = []
+    FakeIMAP.flags = {}
     monkeypatch.setattr(mail, "IMAPClient", FakeIMAP)  # password "ok" logs in
 
     port = free_port()

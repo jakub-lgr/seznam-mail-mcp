@@ -16,6 +16,10 @@ dependencies = [
     "cryptography>=42",
     "uvicorn>=0.30",
     "starlette>=0.40",
+    "pypdf>=5",
+    "pypdfium2>=4",
+    "pillow>=10",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

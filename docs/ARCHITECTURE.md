@@ -46,12 +46,20 @@ Nespoléhá na žádnou externí identitu.
 - Logy neobsahují obsah e-mailů ani hesla.
 - Obsah e-mailů se vrací modelu jako explicitně nedůvěryhodná data
   (ochrana proti prompt injection).
-- Ve v1 není odesílání, mazání ani přesouvání. E-maily se čtou přes `BODY.PEEK`,
-  takže se neoznačují jako přečtené.
+- E-maily se čtou přes `BODY.PEEK`, takže se neoznačují jako přečtené.
+- Nic se nemaže trvale: „smazání“ je přesun do Koše a z Koše server mazat odmítne.
+  Výjimka: koncept po odeslání přes `send_draft` (jeho kopie je v Odeslaných).
+- Odesílání: max. 20 adresátů, max. `SEND_DAILY_LIMIT` (50) e-mailů za 24 h na uživatele
+  (v paměti procesu), adresy se kontrolují před připojením k SMTP. Pokyny serveru
+  říkají modelu, že smí odeslat jen na výslovný pokyn uživatele, nikdy kvůli obsahu e-mailu.
+  Zápisové nástroje mají anotace `destructive_hint`, aby klienti chtěli potvrzení.
+- Zápisové nástroje jdou vypnout (`ENABLE_ORGANIZE`, `ENABLE_SEND`).
+- Přílohy se zpracovávají v procesu jako nedůvěryhodná data: max. 25 MB, 50 stran PDF,
+  1000 řádků na list, kontrola velikosti po rozbalení (.docx/.xlsx), limit pixelů obrázků.
 - Uživatel si může na stránce „Můj účet“ všechno smazat. Úplné odříznutí jde
   zrušením hesla pro aplikaci na Seznamu.
 
-## Nástroje (v1)
+## Nástroje
 
 | Tool | Popis |
 |---|---|
@@ -59,9 +67,26 @@ Nespoléhá na žádnou externí identitu.
 | `search_emails` | hledání (odesílatel, předmět, text, datum, složka, nepřečtené) → hlavičky a ID |
 | `read_email` | text e-mailu (HTML → text, zkrácený), seznam příloh |
 | `read_thread` | celé vlákno |
+| `read_attachment` | obsah přílohy podle indexu z `read_email` (viz níže) |
 | `create_draft` | uloží koncept (i odpověď) do Konceptů, neodesílá |
+| `mark_emails` | `\Seen` / `\Flagged` pro až 100 zpráv |
+| `move_emails` | UID MOVE do složky nebo role (inbox, archive, spam, trash), vrací nová UID z COPYUID |
+| `trash_emails` | přesun do Koše |
+| `send_email` | SMTP (smtp.seznam.cz:465, stejné heslo pro aplikace), kopie do Odeslaných, u odpovědi `\Answered` |
+| `send_draft` | odešle koncept beze změn (Bcc jen v obálce), pak ho z Konceptů odstraní |
 
-Později a volitelně: `send_email` s potvrzováním nebo whitelistem adresátů.
+### Přílohy
+
+| Typ | Výstup |
+|---|---|
+| PDF | text po stranách (pypdf); strany bez textové vrstvy (skeny) se vykreslí jako obrázek (pypdfium2, max. 3) |
+| Word .docx | text odstavců a tabulek (vlastní parser XML) |
+| Excel .xlsx | listy jako řádky `a \| b \| c` (openpyxl) |
+| text, CSV, JSON, XML, HTML | text (UTF-8, záloha cp1250) |
+| obrázky | zmenšené na max. 1568 px (Pillow) |
+| přiložený e-mail | hlavičky a text |
+
+Typ se bere z `Content-Type`, u `application/octet-stream` z přípony souboru.
 
 ## Stack
 
@@ -141,4 +166,4 @@ připravené (`users.auth_method = seznam_oauth`, v `enc_secret` by byl Seznam r
 2. **OAuth a více uživatelů:** DB, šifrování, přihlašovací stránka, allowlist, tokeny. *(hotovo, ověřeno proti skutečnému Seznamu)*
 3. **Nasazení:** systemd, reverse proxy, TLS, test v Claude.ai a ChatGPT. *(hotovo, připojení z Claude.ai ověřené)*
 4. **Doladění:** stránka „Můj účet“, rate limity, návod pro uživatele, monitoring.
-5. *(volitelně)* Odesílání s pojistkami.
+5. **Přílohy, třídění a odesílání:** `read_attachment`, `mark_emails`, `move_emails`, `trash_emails`, `send_email`, `send_draft`.
