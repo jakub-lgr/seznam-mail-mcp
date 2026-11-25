@@ -112,18 +112,33 @@ Backend se volí proměnnou `DATABASE_URL`:
   nalezených podle slov z předmětu.
 - Podporované rozšíření hledání: `SORT`, `I18NLEVEL=1`. `THREAD` ani `ESEARCH` nejsou.
 
-## Datový model (návrh)
+## Datový model
 
-- `users`: id, email, enc_password, allowed, created_at, last_used_at
-- `oauth_clients`: client_id, name, redirect_uris, created_at
-- `auth_codes`: code_hash, client_id, user_id, redirect_uri, code_challenge, expires_at
-- `tokens`: token_hash, kind (access/refresh), user_id, client_id, expires_at, revoked
-- `login_attempts`: email/ip, timestamp (rate limit)
+- `users`: id, email, allowed (allowlist), auth_method, enc_secret (AES-GCM), created_at, last_login_at, last_used_at
+- `oauth_clients`: client_id, client_name, client_info (JSON z dynamické registrace)
+- `auth_requests`: rozpracované `/authorize` požadavky čekající na přihlašovací formulář (15 min)
+- `auth_codes`: autorizační kódy, jednorázové (5 min)
+- `tokens`: hashe access (1 h) a refresh (30 dní, rotují) tokenů
+- `login_attempts`: neúspěšná přihlášení pro rate limit (5 na e-mail a 20 na IP za 15 min)
+
+## Kód (HTTP režim)
+
+- `auth.py`: OAuth provider pro MCP SDK (registrace klientů s allowlistem redirect URI, kódy, tokeny).
+- `web.py`: stránky `/login`, `/account`, `/`, `/health`.
+- `store.py`: databázové operace. `crypto.py`: šifrování a tokeny.
+- `app.py`: složení HTTP aplikace a resolver „token → uživatel → schránka“.
+
+## Přihlášení přes Seznam (plánováno)
+
+Seznam má OAuth 2.0 (`login.seznam.cz`) se scope `email`, jehož token jde použít pro
+IMAP přes `XOAUTH2` (IMAP server ho nabízí). Uživatelé by pak nemuseli vytvářet hesla
+pro aplikace. Je potřeba zaregistrovat službu na vyvojari.seznam.cz. Schéma je na to
+připravené (`users.auth_method = seznam_oauth`, v `enc_secret` by byl Seznam refresh token).
 
 ## Fáze
 
 1. **Jádro:** IMAP vrstva a nástroje, lokální test přes stdio. *(hotovo, všechny nástroje ověřené na skutečné schránce)*
-2. **OAuth a více uživatelů:** DB, šifrování, přihlašovací stránka, allowlist, tokeny.
-3. **Nasazení:** systemd, reverse proxy, TLS, test v Claude.ai a ChatGPT.
+2. **OAuth a více uživatelů:** DB, šifrování, přihlašovací stránka, allowlist, tokeny. *(hotovo, ověřeno proti skutečnému Seznamu)*
+3. **Nasazení:** systemd, reverse proxy, TLS, test v Claude.ai a ChatGPT. *(hotovo, připojení z Claude.ai ověřené)*
 4. **Doladění:** stránka „Můj účet“, rate limity, návod pro uživatele, monitoring.
 5. *(volitelně)* Odesílání s pojistkami.

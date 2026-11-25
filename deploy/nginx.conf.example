@@ -1,0 +1,55 @@
+# nginx site for HTTP mode. Replace mail.mcp.example.com, enable the site, then get TLS:
+#   certbot --nginx -d mail.mcp.example.com --redirect
+#
+# Needs these zones in the http {} block of nginx.conf (or adjust/remove the limit_* lines):
+#   limit_req_zone  $binary_remote_addr zone=login:10m   rate=5r/s;
+#   limit_req_zone  $binary_remote_addr zone=general:10m rate=30r/s;
+#   limit_conn_zone $binary_remote_addr zone=perip:10m;
+server {
+    server_name mail.mcp.example.com;
+    server_tokens off;
+
+    limit_conn perip 20;
+    limit_req zone=general burst=30 nodelay;
+    client_max_body_size 1m;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Login and account forms: tighter rate limit (the app also limits failed logins)
+    location ~ ^/(login|account)$ {
+        limit_req zone=login burst=10 nodelay;
+        proxy_pass http://127.0.0.1:3856;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # MCP Streamable HTTP: responses may be SSE streams -> no buffering, long timeouts
+    location = /mcp {
+        proxy_pass http://127.0.0.1:3856;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # OAuth endpoints, metadata, landing page, health
+    location / {
+        proxy_pass http://127.0.0.1:3856;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    listen 80;
+    listen [::]:80;
+}

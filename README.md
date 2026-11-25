@@ -40,7 +40,26 @@ claude mcp add seznam-mail -- /cesta/k/projektu/.venv/bin/seznam-mail-mcp --env-
 
 ### Více uživatelů přes HTTPS (OAuth)
 
-Ve vývoji (fáze 2), viz [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Server má vlastní OAuth, takže ho jde přidat jako vlastní konektor do Claude.ai, ChatGPT
+a dalších klientů. Každý uživatel se přihlásí na přihlašovací stránce serveru svým
+e-mailem a heslem pro aplikace. Přístup mají jen adresy na allowlistu.
+
+1. V `.env` nastav aspoň `PUBLIC_URL` (veřejná HTTPS adresa) a `PORT`, viz [.env.example](.env.example).
+2. Povol uživatele:
+   ```
+   seznam-mail-mcp users allow jmeno@seznam.cz
+   seznam-mail-mcp users list
+   ```
+3. Spusť server za reverse proxy s TLS. Vzory jsou v [deploy/](deploy/): systemd služba
+   [seznam-mail-mcp.service](deploy/seznam-mail-mcp.service) a nginx [nginx.conf.example](deploy/nginx.conf.example).
+   Ručně: `seznam-mail-mcp serve`.
+4. V klientovi přidej konektor s adresou `https://<tvoje-domena>/mcp`.
+
+Další příkazy: `users deny` (zakáže adresu a odhlásí její aplikace) a `users delete`.
+Uživatel se může sám odpojit na stránce `/account`.
+
+Šifrovací klíč pro uložená hesla se při prvním startu vytvoří v `data/secret.key`.
+**Zálohuj ho**, bez něj uložená hesla nejdou přečíst (uživatelé by se museli přihlásit znovu).
 
 ## Databáze
 

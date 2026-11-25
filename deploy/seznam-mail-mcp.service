@@ -1,0 +1,48 @@
+# systemd unit for HTTP mode. Adjust paths, then:
+#   cp deploy/seznam-mail-mcp.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now seznam-mail-mcp
+[Unit]
+Description=Seznam e-mail MCP server (HTTP + OAuth)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seznam-mcp
+Group=seznam-mcp
+WorkingDirectory=/opt/mcp/seznam-mail
+ExecStart=/opt/mcp/seznam-mail/.venv/bin/seznam-mail-mcp --env-file /opt/mcp/seznam-mail/.env serve
+Restart=on-failure
+RestartSec=5
+# DATA_DIR / SECRET_KEY_FILE live here (encryption key: back it up!)
+StateDirectory=seznam-mail-mcp
+StateDirectoryMode=0700
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/seznam-mail-mcp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

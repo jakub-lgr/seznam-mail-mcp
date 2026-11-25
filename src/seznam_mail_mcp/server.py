@@ -181,11 +181,59 @@ def env_account() -> MailAccount:
     )
 
 
+def _users_cli(args: argparse.Namespace) -> None:
+    import asyncio
+
+    from .config import load_settings
+    from .db import create_engine, init_db
+    from .store import Store
+
+    async def run() -> None:
+        engine = create_engine(load_settings(args.env_file))
+        try:
+            await init_db(engine)
+            store = Store(engine)
+            if args.users_cmd == "list":
+                rows = await store.list_users()
+                if not rows:
+                    print("(žádní uživatelé)")
+                for u in rows:
+                    state = "povolen " if u.allowed else "zakázán"
+                    connected = "připojen" if u.enc_secret else "-"
+                    last = u.last_used_at.astimezone().strftime("%Y-%m-%d %H:%M") if u.last_used_at else "-"
+                    print(f"{u.email:40} {state} {connected:9} naposledy: {last}")
+            elif args.users_cmd == "allow":
+                for email in args.email:
+                    await store.set_allowed(email, True)
+                    print(f"povoleno: {email.lower()}")
+            elif args.users_cmd == "deny":
+                for email in args.email:
+                    await store.set_allowed(email, False)
+                    print(f"zakázáno a odhlášeno: {email.lower()}")
+            elif args.users_cmd == "delete":
+                for email in args.email:
+                    print(("smazáno: " if await store.delete_user(email) else "nenalezeno: ") + email.lower())
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="seznam-mail-mcp")
     parser.add_argument("--env-file", help="cesta k .env (výchozí: .env v aktuální složce)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("stdio", help="jeden uživatel, údaje z SEZNAM_EMAIL / SEZNAM_APP_PASSWORD")
+    sub.add_parser("serve", help="HTTP server pro více uživatelů (OAuth)")
+    users = sub.add_parser("users", help="správa povolených uživatelů (allowlist)")
+    users_sub = users.add_subparsers(dest="users_cmd", required=True)
+    users_sub.add_parser("list", help="vypsat uživatele")
+    for name, help_text in (
+        ("allow", "povolit adresy"),
+        ("deny", "zakázat adresy a odhlásit jejich aplikace"),
+        ("delete", "smazat uživatele i s uloženými údaji"),
+    ):
+        users_sub.add_parser(name, help=help_text).add_argument("email", nargs="+")
     args = parser.parse_args()
 
     load_dotenv(args.env_file or ".env", override=False)
@@ -197,6 +245,13 @@ def main() -> None:
 
         print(f"seznam-mail-mcp {__version__}: stdio, {account.email}", file=sys.stderr)
         build_server(resolve).run("stdio")
+    elif args.cmd == "serve":
+        from .app import serve
+        from .config import load_settings
+
+        serve(load_settings(args.env_file))
+    elif args.cmd == "users":
+        _users_cli(args)
 
 
 if __name__ == "__main__":

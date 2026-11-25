@@ -104,6 +104,9 @@ class FakeIMAP:
     def logout(self):
         pass
 
+    def noop(self):
+        pass
+
     def list_folders(self):
         return [((b"\\HasNoChildren",), b"/", "INBOX"), ((b"\\Sent",), b"/", "Odeslané"), ((b"\\Drafts",), b"/", "Koncepty")]
 

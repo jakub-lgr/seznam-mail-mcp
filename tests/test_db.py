@@ -45,9 +45,9 @@ async def _roundtrip(settings: Settings):
         await init_db(engine)  # idempotent
         async with engine.begin() as conn:
             await conn.execute(sa.delete(users).where(users.c.email == "test@example.invalid"))
-            await conn.execute(sa.insert(users).values(email="test@example.invalid", enc_password=b"\x00\x01"))
+            await conn.execute(sa.insert(users).values(email="test@example.invalid", enc_secret=b"\x00\x01"))
             row = (await conn.execute(sa.select(users).where(users.c.email == "test@example.invalid"))).one()
-            assert row.enc_password == b"\x00\x01"
+            assert row.enc_secret == b"\x00\x01"
             assert row.allowed is False
             assert row.created_at is not None
             await conn.execute(sa.delete(users).where(users.c.id == row.id))

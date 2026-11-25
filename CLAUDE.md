@@ -17,7 +17,7 @@ Design: docs/ARCHITECTURE.md. Docs and UI texts are in Czech.
 ## Dev
 
 - venv: `.venv/bin/pip install -e '.[dev]'`
-- tests: `.venv/bin/pytest` (PostgreSQL test runs only with `TEST_DATABASE_URL` set;
+- tests: `.venv/bin/pytest` (PostgreSQL tests run only with `TEST_DATABASE_URL` set — use a SEPARATE test database, tests drop its tables;
   tool tests use a fake IMAP server in tests/test_mail.py)
 - run locally: `.venv/bin/seznam-mail-mcp stdio` (needs SEZNAM_EMAIL / SEZNAM_APP_PASSWORD)
 - MCP SDK is v2: `from mcp.server.mcpserver import MCPServer` (not FastMCP)

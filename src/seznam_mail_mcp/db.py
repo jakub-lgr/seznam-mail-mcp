@@ -29,11 +29,13 @@ users = sa.Table(
     "users",
     metadata,
     sa.Column("id", Id, primary_key=True, autoincrement=True),
-    sa.Column("email", sa.String(320), nullable=False, unique=True),
-    # NULL until the user logs in for the first time (an admin may allowlist the address first).
-    sa.Column("enc_password", sa.LargeBinary, nullable=True),
-    sa.Column("allowed", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("email", sa.String(320), nullable=False, unique=True, comment="lower-case"),
+    sa.Column("allowed", sa.Boolean, nullable=False, server_default=sa.false(), comment="the allowlist"),
+    sa.Column("auth_method", sa.String(32), nullable=True, comment="app_password | seznam_oauth"),
+    # AES-GCM ciphertext (crypto.SecretBox, context = email); NULL until the first login.
+    sa.Column("enc_secret", sa.LargeBinary, nullable=True),
     sa.Column("created_at", Timestamp, nullable=False, server_default=sa.func.now()),
+    sa.Column("last_login_at", Timestamp, nullable=True),
     sa.Column("last_used_at", Timestamp, nullable=True),
     comment="Seznam mailboxes; allowed=true is the allowlist",
 )
@@ -41,22 +43,30 @@ users = sa.Table(
 oauth_clients = sa.Table(
     "oauth_clients",
     metadata,
-    sa.Column("client_id", sa.String(64), primary_key=True),
+    sa.Column("client_id", sa.String(128), primary_key=True),
     sa.Column("client_name", sa.String(200), nullable=True),
-    sa.Column("redirect_uris", sa.Text, nullable=False, comment="JSON array"),
+    sa.Column("client_info", sa.Text, nullable=False, comment="RFC 7591 client information (JSON)"),
     sa.Column("created_at", Timestamp, nullable=False, server_default=sa.func.now()),
     comment="OAuth clients registered via dynamic client registration",
+)
+
+auth_requests = sa.Table(
+    "auth_requests",
+    metadata,
+    sa.Column("request_hash", sa.String(64), primary_key=True, comment="SHA-256 hex"),
+    sa.Column("client_id", sa.String(128), sa.ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False),
+    sa.Column("params", sa.Text, nullable=False, comment="AuthorizationParams (JSON)"),
+    sa.Column("expires_at", Timestamp, nullable=False),
+    comment="Pending /authorize requests waiting for the login form",
 )
 
 auth_codes = sa.Table(
     "auth_codes",
     metadata,
     sa.Column("code_hash", sa.String(64), primary_key=True, comment="SHA-256 hex"),
-    sa.Column("client_id", sa.String(64), sa.ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False),
+    sa.Column("client_id", sa.String(128), sa.ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False),
     sa.Column("user_id", Id, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("redirect_uri", sa.Text, nullable=False),
-    sa.Column("code_challenge", sa.String(128), nullable=False),
-    sa.Column("scope", sa.Text, nullable=True),
+    sa.Column("params", sa.Text, nullable=False, comment="AuthorizationParams (JSON)"),
     sa.Column("expires_at", Timestamp, nullable=False),
     comment="Short-lived OAuth authorization codes (PKCE)",
 )
@@ -67,12 +77,13 @@ tokens = sa.Table(
     sa.Column("token_hash", sa.String(64), primary_key=True, comment="SHA-256 hex"),
     sa.Column("kind", sa.String(16), nullable=False, comment="access | refresh"),
     sa.Column("user_id", Id, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("client_id", sa.String(64), sa.ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False),
-    sa.Column("scope", sa.Text, nullable=True),
+    sa.Column("client_id", sa.String(128), sa.ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False),
+    sa.Column("scopes", sa.Text, nullable=False, server_default="", comment="space separated"),
+    sa.Column("resource", sa.Text, nullable=True),
     sa.Column("created_at", Timestamp, nullable=False, server_default=sa.func.now()),
     sa.Column("expires_at", Timestamp, nullable=False),
     sa.Column("revoked", sa.Boolean, nullable=False, server_default=sa.false()),
-    sa.Index("ix_tokens_user_id", "user_id"),
+    sa.Index("ix_tokens_user_client", "user_id", "client_id"),
     comment="OAuth access and refresh tokens (hashes only)",
 )
 

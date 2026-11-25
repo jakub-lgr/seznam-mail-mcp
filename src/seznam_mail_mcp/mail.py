@@ -241,6 +241,12 @@ def _is_ascii(s: str) -> bool:
 # ---------------------------------------------------------------- operations
 
 
+def verify_login(account: MailAccount) -> None:
+    """Raise MailError unless the credentials can log in."""
+    with connect(account) as client:
+        client.noop()
+
+
 def list_folders(account: MailAccount) -> list[dict[str, Any]]:
     with connect(account) as client:
         out = []
