@@ -89,7 +89,33 @@ python -m seznam_mail_mcp.db init
 
 Vzor konfigurace je v [.env.example](.env.example).
 
-Návrh a známé zvláštnosti Seznam IMAPu jsou v [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Aktualizace
+
+```
+git pull
+.venv/bin/pip install -e .
+systemctl restart seznam-mail-mcp
+```
+
+Nové nástroje se v klientovi objeví samy (nejpozději v nové konverzaci), přihlášení zůstává.
+
+## Omezení
+
+- Odesílání neumí přílohy.
+- Přílohy `.doc`, `.xls`, ODF a PDF chráněná heslem se nečtou.
+- „Smazání“ je vždy přesun do Koše, trvale server nemaže nic.
+
+## Vývoj
+
+```
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+```
+
+Testy běží proti simulovanému IMAP/SMTP serveru. PostgreSQL testy se spustí jen s
+`TEST_DATABASE_URL` (samostatná testovací databáze, testy mažou její tabulky).
+
+Návrh, bezpečnost a ověřené zvláštnosti Seznam IMAPu jsou v [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Licence
 

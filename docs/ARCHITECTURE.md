@@ -16,7 +16,7 @@
    └─ IMAP/SMTP       imap.seznam.cz:993 / smtp.seznam.cz:465
         │
         ▼
- SQLite  (uživatelé, šifrovaná hesla pro aplikace, OAuth klienti, hashe tokenů)
+ PostgreSQL nebo SQLite  (uživatelé, šifrovaná hesla pro aplikace, OAuth klienti, hashe tokenů)
 ```
 
 Služba je zároveň **OAuth autorizační server** i **resource server** (MCP endpoint).
@@ -38,8 +38,8 @@ Nespoléhá na žádnou externí identitu.
 
 ## Bezpečnost
 
-- Hesla pro aplikace jsou šifrovaná AES-GCM. Klíč je **mimo databázi**
-  (systemd credential / soubor s právy 600).
+- Hesla pro aplikace jsou šifrovaná AES-GCM (e-mail jako associated data). Klíč je
+  **mimo databázi** v souboru `SECRET_KEY_FILE` s právy 600.
 - Tokeny a autorizační kódy jsou v DB jen jako SHA-256 hashe.
 - Redirect URI jsou omezené na nakonfigurovaný seznam (callbacky známých klientů).
 - Rate limit a dočasné zablokování po opakovaných neúspěšných přihlášeních.
@@ -64,13 +64,13 @@ Nespoléhá na žádnou externí identitu.
 | Tool | Popis |
 |---|---|
 | `list_folders` | složky a počty nepřečtených |
-| `search_emails` | hledání (odesílatel, předmět, text, datum, složka, nepřečtené) → hlavičky a ID |
+| `search_emails` | hledání (odesílatel, příjemce, předmět, text, datum, nepřečtené, s hvězdičkou, s přílohou) → hlavičky, UID a počet příloh |
 | `read_email` | text e-mailu (HTML → text, zkrácený), seznam příloh |
 | `read_thread` | celé vlákno |
 | `read_attachment` | obsah přílohy podle indexu z `read_email` (viz níže) |
 | `create_draft` | uloží koncept (i odpověď) do Konceptů, neodesílá |
 | `mark_emails` | `\Seen` / `\Flagged` pro až 100 zpráv |
-| `move_emails` | UID MOVE do složky nebo role (inbox, archive, spam, trash), vrací nová UID z COPYUID |
+| `move_emails` | UID MOVE do složky nebo role (inbox, archive, spam, trash), vrací nová UID |
 | `trash_emails` | přesun do Koše |
 | `send_email` | SMTP (smtp.seznam.cz:465, stejné heslo pro aplikace), kopie do Odeslaných, u odpovědi `\Answered` |
 | `send_draft` | odešle koncept beze změn (Bcc jen v obálce), pak ho z Konceptů odstraní |
@@ -93,14 +93,17 @@ Typ se bere z `Content-Type`, u `application/octet-stream` z přípony souboru.
 - Python 3.11+, oficiální `mcp` SDK v2 (`MCPServer`, Streamable HTTP, podpora OAuth)
 - Starlette (webové stránky), `IMAPClient` v thread poolu (nové spojení na každé volání nástroje)
 
+- SQLAlchemy Core (async): **PostgreSQL** (`asyncpg`) nebo **SQLite** (`aiosqlite`)
+- `cryptography` (AES-GCM), `smtplib` ze standardní knihovny
+- přílohy: `pypdf`, `pypdfium2` (vykreslení skenů), `Pillow`, `openpyxl`
+
 ### Kód
 
-- `mail.py`: IMAP operace, parsování e-mailů. Neví nic o MCP ani o uživatelích.
+- `mail.py`: IMAP/SMTP operace, parsování e-mailů. Neví nic o MCP ani o uživatelích.
+- `attachments.py`: převod příloh na text a obrázky. `htmltext.py`: HTML → text.
 - `server.py`: MCP nástroje. Údaje ke schránce získá přes *resolver*: ve stdio režimu
   z proměnných prostředí, v HTTP režimu podle OAuth tokenu.
 - `db.py`, `config.py`: databáze (PostgreSQL / SQLite) a konfigurace.
-- `cryptography` (AES-GCM)
-- SQLAlchemy Core (async): **PostgreSQL** (`asyncpg`) nebo **SQLite** (`aiosqlite`)
 
 ### Databáze: PostgreSQL nebo SQLite
 
@@ -160,7 +163,14 @@ Backend se volí proměnnou `DATABASE_URL`:
 - `store.py`: databázové operace. `crypto.py`: šifrování a tokeny.
 - `app.py`: složení HTTP aplikace a resolver „token → uživatel → schránka“.
 
-## Přihlášení přes Seznam (plánováno)
+## Omezení
+
+- Odesílání neumí přílohy (ani přeposlání s přílohami).
+- Přílohy ve starých formátech `.doc` / `.xls`, ODF a PDF chráněná heslem se nečtou.
+- Denní limit odesílání se drží v paměti procesu, restart ho vynuluje.
+- Server neví, které e-maily uživatel četl naposledy, vidí jen příznak přečtení.
+
+## Přihlášení přes Seznam (možné rozšíření)
 
 Seznam má OAuth 2.0 (`login.seznam.cz`) se scope `email`, jehož token jde použít pro
 IMAP přes `XOAUTH2` (IMAP server ho nabízí). Uživatelé by pak nemuseli vytvářet hesla
@@ -172,5 +182,6 @@ připravené (`users.auth_method = seznam_oauth`, v `enc_secret` by byl Seznam r
 1. **Jádro:** IMAP vrstva a nástroje, lokální test přes stdio. *(hotovo, všechny nástroje ověřené na skutečné schránce)*
 2. **OAuth a více uživatelů:** DB, šifrování, přihlašovací stránka, allowlist, tokeny. *(hotovo, ověřeno proti skutečnému Seznamu)*
 3. **Nasazení:** systemd, reverse proxy, TLS, test v Claude.ai a ChatGPT. *(hotovo, připojení z Claude.ai ověřené)*
-4. **Doladění:** stránka „Můj účet“, rate limity, návod pro uživatele, monitoring.
-5. **Přílohy, třídění a odesílání:** `read_attachment`, `mark_emails`, `move_emails`, `trash_emails`, `send_email`, `send_draft`.
+4. **Doladění:** stránka „Můj účet“, rate limity, návod pro uživatele. *(hotovo)*
+5. **Přílohy, třídění a odesílání:** `read_attachment`, `mark_emails`, `move_emails`, `trash_emails`,
+   `send_email`, `send_draft`. *(hotovo, ověřeno na skutečné schránce a v Claude.ai; verze 1.0.0)*
