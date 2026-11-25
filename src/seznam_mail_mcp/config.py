@@ -32,7 +32,7 @@ class Settings:
     redirect_uris: tuple[str, ...] = DEFAULT_REDIRECT_URIS
     allow_loopback_redirects: bool = True
     access_token_ttl: int = 3600
-    refresh_token_ttl: int = 30 * 24 * 3600
+    refresh_token_ttl: int = 180 * 24 * 3600  # sliding: renewed on every refresh
     imap_host: str = "imap.seznam.cz"
     imap_port: int = 993
     allowed_origins: tuple[str, ...] = ()
@@ -97,7 +97,7 @@ def load_settings(env_file: str | os.PathLike | None = None) -> Settings:
         redirect_uris=_list(env.get("ALLOWED_REDIRECT_URIS"), DEFAULT_REDIRECT_URIS),
         allow_loopback_redirects=_bool(env.get("ALLOW_LOOPBACK_REDIRECTS"), True),
         access_token_ttl=int(env.get("ACCESS_TOKEN_TTL", "3600")),
-        refresh_token_ttl=int(env.get("REFRESH_TOKEN_TTL", str(30 * 24 * 3600))),
+        refresh_token_ttl=int(env.get("REFRESH_TOKEN_TTL", str(180 * 24 * 3600))),
         imap_host=env.get("IMAP_HOST", "imap.seznam.cz"),
         imap_port=int(env.get("IMAP_PORT", "993")),
         allowed_origins=_list(env.get("ALLOWED_ORIGINS"), ()),

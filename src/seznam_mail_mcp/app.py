@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from .store import Store, utcnow
 from .web import install_routes
 
 log = logging.getLogger(__name__)
+
+PURGE_INTERVAL = 24 * 3600  # seconds
 
 TOUCH_INTERVAL = timedelta(minutes=5)
 
@@ -90,12 +93,26 @@ def build_http_app(settings: Settings, engine: AsyncEngine | None = None) -> Htt
     async def lifespan(_app):
         await init_db(engine)
         await store.purge_expired()
-        async with server.session_manager.run():
-            yield
-        await engine.dispose()
+        purger = asyncio.create_task(_purge_daily(store))
+        try:
+            async with server.session_manager.run():
+                yield
+        finally:
+            purger.cancel()
+            await engine.dispose()
 
     app.router.lifespan_context = lifespan
     return HttpApp(app=app, server=server, store=store, engine=engine)
+
+
+async def _purge_daily(store: Store) -> None:
+    """Delete expired codes, tokens and old login attempts once a day."""
+    while True:
+        await asyncio.sleep(PURGE_INTERVAL)
+        try:
+            await store.purge_expired()
+        except Exception:
+            log.exception("purge of expired tokens failed")
 
 
 def serve(settings: Settings) -> None:

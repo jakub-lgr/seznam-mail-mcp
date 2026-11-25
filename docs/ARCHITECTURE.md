@@ -33,7 +33,7 @@ Nespoléhá na žádnou externí identitu.
    identity, žádný další účet ani heslo nejsou potřeba.
 5. **Allowlist:** přihlásit se mohou jen adresy, které povolil správce.
 6. Heslo se zašifruje a uloží. Klient dostane access token (1 h) a refresh token
-   (30 dní, rotuje se při každém použití).
+   (180 dní, rotuje se při každém použití, takže limit platí jen pro nečinnost).
 7. Každé volání nástroje: token → uživatel → dešifrované údaje → jeho schránka.
 
 ## Bezpečnost
@@ -118,7 +118,7 @@ Backend se volí proměnnou `DATABASE_URL`:
 - `oauth_clients`: client_id, client_name, client_info (JSON z dynamické registrace)
 - `auth_requests`: rozpracované `/authorize` požadavky čekající na přihlašovací formulář (15 min)
 - `auth_codes`: autorizační kódy, jednorázové (5 min)
-- `tokens`: hashe access (1 h) a refresh (30 dní, rotují) tokenů
+- `tokens`: hashe access (1 h) a refresh (180 dní nečinnosti, rotují) tokenů; vypršené maže server jednou denně
 - `login_attempts`: neúspěšná přihlášení pro rate limit (5 na e-mail a 20 na IP za 15 min)
 
 ## Kód (HTTP režim)

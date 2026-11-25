@@ -62,3 +62,32 @@ async def test_sqlite_roundtrip(tmp_path):
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL not set")
 async def test_postgresql_roundtrip(tmp_path):
     await _roundtrip(Settings(database_url=normalize_database_url(os.environ["TEST_DATABASE_URL"], tmp_path)))
+
+
+def test_refresh_token_default_is_180_days(tmp_path, monkeypatch):
+    from seznam_mail_mcp.config import load_settings
+
+    monkeypatch.delenv("REFRESH_TOKEN_TTL", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("")
+    assert load_settings(str(env)).refresh_token_ttl == 180 * 24 * 3600
+
+
+async def test_purge_runs_periodically(monkeypatch):
+    import asyncio
+
+    from seznam_mail_mcp import app
+
+    calls = []
+
+    class FakeStore:
+        async def purge_expired(self):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("db down")  # a failure must not stop the loop
+
+    monkeypatch.setattr(app, "PURGE_INTERVAL", 0.01)
+    task = asyncio.create_task(app._purge_daily(FakeStore()))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    assert len(calls) >= 2
