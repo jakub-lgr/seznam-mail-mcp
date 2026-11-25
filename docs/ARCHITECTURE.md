@@ -140,6 +140,8 @@ Backend se volí proměnnou `DATABASE_URL`:
   protože Seznam porovnává celá slova.
 - Po `UID MOVE` posílá Seznam `COPYUID` v netagované odpovědi, kterou IMAPClient nevrátí.
   Nové UID se proto dohledává v cílové složce podle Message-ID.
+- SMTP (smtp.seznam.cz:465) si odeslané e-maily do Odeslaných **neukládá**, kopii ukládá server
+  (`SAVE_SENT_COPY`). Ověřeno: po odeslání je v Odeslaných právě jedna kopie.
 - Hledání podle příloh IMAP nemá: `has_attachment` čte `BODYSTRUCTURE` nejnovějších 500 výsledků.
 
 ## Datový model
