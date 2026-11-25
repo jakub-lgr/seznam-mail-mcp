@@ -151,8 +151,45 @@ def _summary(uid: int, data: dict, folder: str) -> dict[str, Any]:
         "subject": _hdr(msg, "Subject") or "",
         "unread": "\\Seen" not in flags,
         "flagged": "\\Flagged" in flags,
+        "attachments": count_attachments(data.get(b"BODYSTRUCTURE")),
         "size": data.get(b"RFC822.SIZE"),
     }
+
+
+def _pairs(value: Any) -> dict[str, Any]:
+    """BODYSTRUCTURE parameter list (k1, v1, k2, v2, ...) -> {k: v} with lower-case keys."""
+    if not isinstance(value, (tuple, list)):
+        return {}
+    items = list(value)
+    out = {}
+    for k, v in zip(items[::2], items[1::2]):
+        if isinstance(k, bytes):
+            out[k.decode(errors="replace").lower()] = v
+    return out
+
+
+def _lower(value: Any) -> str:
+    return value.decode(errors="replace").lower() if isinstance(value, bytes) else str(value or "").lower()
+
+
+def count_attachments(bs: Any) -> int:
+    """Count attachments from an IMAP BODYSTRUCTURE without downloading the message."""
+    if not bs:
+        return 0
+    if isinstance(bs[0], list):  # multipart: ([parts], subtype, ...)
+        return sum(count_attachments(part) for part in bs[0])
+    maintype, subtype = _lower(bs[0]), _lower(bs[1] if len(bs) > 1 else b"")
+    if (maintype, subtype) == ("message", "rfc822"):
+        return 1  # attached e-mail
+    params = _pairs(bs[2] if len(bs) > 2 else None)
+    disp_index = 9 if maintype == "text" else 8  # text parts carry a line count before MD5
+    disp = bs[disp_index] if len(bs) > disp_index else None
+    disp_type = _lower(disp[0]) if isinstance(disp, (tuple, list)) and disp else ""
+    disp_params = _pairs(disp[1]) if disp_type and len(disp) > 1 else {}
+    if disp_type == "attachment":
+        return 1
+    named = "name" in params or "filename" in disp_params
+    return 1 if named and maintype != "text" else 0
 
 
 def _text_of(part: Message) -> str:
@@ -288,6 +325,10 @@ def list_folders(account: MailAccount) -> list[dict[str, Any]]:
         return out
 
 
+_WORD = re.compile(r"\w+")
+_ADDRESS_WORD = re.compile(r"[\w.@+-]+")
+
+
 def build_search_criteria(
     *,
     from_: str | None = None,
@@ -298,11 +339,14 @@ def build_search_criteria(
     before: date | None = None,
     unread_only: bool = False,
     flagged_only: bool = False,
+    has_attachment: bool = False,  # not an IMAP criterion; filtered in search()
 ) -> tuple[list[Any], str | None]:
     criteria: list[Any] = []
-    for key, value in (("FROM", from_), ("TO", to), ("SUBJECT", subject)):
-        if value:
-            criteria += [key, fold_diacritics(value)]
+    # Seznam matches whole words: search each word separately (AND), without punctuation
+    # like the brackets in "[TEST]". Addresses keep their @ . + - characters.
+    for key, value, pattern in (("FROM", from_, _ADDRESS_WORD), ("TO", to, _ADDRESS_WORD), ("SUBJECT", subject, _WORD)):
+        for word in pattern.findall(fold_diacritics(value or "")):
+            criteria += [key, word]
     if text:  # TEXT works with diacritics on Seznam
         criteria += ["TEXT", text]
     if since:
@@ -319,6 +363,10 @@ def build_search_criteria(
     return criteria, charset
 
 
+ATTACHMENT_SCAN_LIMIT = 500  # newest matches inspected for has_attachment
+_SUMMARY_FETCH = [_HEADER_FETCH, "FLAGS", "RFC822.SIZE", "BODYSTRUCTURE"]
+
+
 def search(account: MailAccount, folder: str, limit: int, **filters: Any) -> dict[str, Any]:
     criteria, charset = build_search_criteria(**filters)
     with connect(account) as client:
@@ -328,10 +376,31 @@ def search(account: MailAccount, folder: str, limit: int, **filters: Any) -> dic
         except IMAPClientError as e:
             raise MailError(f"Hledání selhalo: {e}") from e
         uids = sorted(uids, reverse=True)
-        page = uids[:limit]
-        data = client.fetch(page, [_HEADER_FETCH, "FLAGS", "RFC822.SIZE"]) if page else {}
+        if not filters.get("has_attachment"):
+            page = uids[:limit]
+            data = client.fetch(page, _SUMMARY_FETCH) if page else {}
+            messages = [_summary(uid, data[uid], folder) for uid in page if uid in data]
+            return {"folder": folder, "total_matches": len(uids), "returned": len(messages), "messages": messages}
+
+        # IMAP cannot search for attachments: check BODYSTRUCTURE of the newest matches.
+        scan = uids[:ATTACHMENT_SCAN_LIMIT]
+        with_att: list[int] = []
+        for i in range(0, len(scan), 100):
+            chunk = scan[i : i + 100]
+            structures = client.fetch(chunk, ["BODYSTRUCTURE"])
+            with_att += [u for u in chunk if count_attachments(structures.get(u, {}).get(b"BODYSTRUCTURE"))]
+            if len(with_att) >= limit:
+                break
+        page = with_att[:limit]
+        data = client.fetch(page, _SUMMARY_FETCH) if page else {}
         messages = [_summary(uid, data[uid], folder) for uid in page if uid in data]
-        return {"folder": folder, "total_matches": len(uids), "returned": len(messages), "messages": messages}
+        result = {"folder": folder, "returned": len(messages), "messages": messages}
+        if len(uids) > ATTACHMENT_SCAN_LIMIT and len(with_att) < limit:
+            result["note"] = (
+                f"Přílohy se kontrolovaly jen u {ATTACHMENT_SCAN_LIMIT} nejnovějších z {len(uids)} zpráv. "
+                "Starší najdeš se zúženým hledáním (since/before)."
+            )
+        return result
 
 
 def _fetch_full(client: IMAPClient, uid: int) -> tuple[EmailMessage, list]:
@@ -623,6 +692,36 @@ def _copyuid_map(response: Any) -> dict[int, int]:
     return dict(zip(old, new)) if len(old) == len(new) else {}
 
 
+def _message_id_map(client: IMAPClient, uids: list[int]) -> dict[int, str]:
+    data = client.fetch(uids, ["BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]"])
+    out = {}
+    for u, d in data.items():
+        ids = _message_ids(_hdr(_parse(_body_key(d) or b"", headers_only=True), "Message-ID"))
+        if ids:
+            out[u] = ids[0]
+    return out
+
+
+def _find_by_message_id(client: IMAPClient, folder: str, wanted: dict[int, str]) -> dict[int, int]:
+    if not wanted:
+        return {}
+    found: dict[int, int] = {}
+    try:
+        _select(client, folder)
+        for old, mid in wanted.items():
+            if not _SAFE_MESSAGE_ID.fullmatch(mid):  # Seznam errors on some characters
+                continue
+            try:
+                hits = client.search(["HEADER", "Message-ID", mid])
+            except IMAPClientError:
+                continue
+            if hits:
+                found[old] = max(hits)
+    except MailError:
+        pass
+    return found
+
+
 def _resolve_target(client: IMAPClient, target: str) -> str:
     """A folder name, or a role: inbox, archive, trash, spam."""
     names = [name for flags, _d, name in client.list_folders() if b"\\Noselect" not in flags]
@@ -651,6 +750,7 @@ def move_messages(account: MailAccount, folder: str, uids: list[int], target: st
         ok, missing = _existing(client, uids)
         mapping: dict[int, int] = {}
         if ok:
+            ids = _message_id_map(client, ok)
             if client.has_capability("MOVE"):
                 resp = client.move(ok, dest)
             else:  # COPY + \Deleted + UID EXPUNGE of just these messages
@@ -658,6 +758,10 @@ def move_messages(account: MailAccount, folder: str, uids: list[int], target: st
                 client.add_flags(ok, [b"\\Deleted"], silent=True)
                 client.uid_expunge(ok)
             mapping = _copyuid_map(resp)
+            if len(mapping) < len(ok):
+                # Seznam sends COPYUID in an untagged response the client library drops:
+                # find the moved messages in the target folder by Message-ID instead.
+                mapping.update(_find_by_message_id(client, dest, {u: ids[u] for u in ok if u not in mapping and u in ids}))
         return {
             "from_folder": folder,
             "to_folder": dest,

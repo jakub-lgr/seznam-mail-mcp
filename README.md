@@ -14,7 +14,7 @@ asistenty (Claude, ChatGPT a další MCP klienty) s e-mailovou schránkou na
 | Tool | Popis |
 |---|---|
 | `list_folders` | složky, počty zpráv a nepřečtených |
-| `search_emails` | hledání podle odesílatele, příjemce, předmětu, textu, data, nepřečtených |
+| `search_emails` | hledání podle odesílatele, příjemce, předmětu, textu, data, nepřečtených, s přílohou; výsledky ukazují počet příloh |
 | `read_email` | text e-mailu a seznam příloh (neoznačí jako přečtený) |
 | `read_thread` | celé vlákno včetně odeslaných odpovědí |
 | `read_attachment` | obsah přílohy: PDF (naskenované stránky jako obrázek), Word, Excel, text/CSV, obrázky, přeposlané e-maily |

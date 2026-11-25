@@ -73,6 +73,9 @@ def test_search_criteria_charset():
     crit, charset = build_search_criteria(text="Zařazení")
     assert crit == ["TEXT", "Zařazení"] and charset == "UTF-8"
     assert build_search_criteria() == (["ALL"], None)
+    crit, _ = build_search_criteria(subject="[TEST] Nový koncept", from_="Petr <petr@example.cz>")
+    assert crit == ["FROM", "Petr", "FROM", "petr@example.cz", "SUBJECT", "TEST", "SUBJECT", "Novy", "SUBJECT", "koncept"]
+    assert build_search_criteria(subject="!!!") == (["ALL"], None)
 
 
 def test_build_reply_draft():
@@ -88,6 +91,24 @@ def test_account_repr_hides_password():
 
 
 # ------------------------------------------------------------ tools over a fake IMAP server
+
+
+def bodystructure(msg):
+    """Roughly what an IMAP server returns for BODYSTRUCTURE (enough for count_attachments)."""
+    from imapclient.response_types import BodyData
+
+    if msg.is_multipart() and msg.get_content_type() != "message/rfc822":
+        return BodyData(([bodystructure(p) for p in msg.iter_parts()], msg.get_content_subtype().encode()))
+    maintype, subtype = msg.get_content_maintype().encode(), msg.get_content_subtype().encode()
+    params = tuple(x for k, v in msg.get_params()[1:] for x in (k.encode(), str(v).encode())) or None
+    disp = msg.get_content_disposition()
+    disposition = (disp.encode(), (b"filename", msg.get_filename().encode()) if msg.get_filename() else None) if disp else None
+    base = (maintype, subtype, params, None, None, b"7bit", 10)
+    if maintype == b"text":
+        return BodyData(base + (1, None, disposition))
+    if (maintype, subtype) == (b"message", b"rfc822"):
+        return BodyData(base + (None, None, 1, None, disposition))
+    return BodyData(base + (None, disposition))
 
 
 class FakeIMAP:
@@ -189,6 +210,8 @@ class FakeIMAP:
             body = raw.split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n" if any("HEADER" in i for i in items) else raw
             flags = tuple(self.flags.get((self.selected, uid), ()))
             out[uid] = {b"BODY[]": body, b"FLAGS": flags, b"RFC822.SIZE": len(raw)}
+            if "BODYSTRUCTURE" in items:
+                out[uid][b"BODYSTRUCTURE"] = bodystructure(parse(raw))
         return out
 
     def append(self, folder, msg, flags=(), msg_time=None):
@@ -249,7 +272,10 @@ async def test_tool_search_and_read(client):
     res = await call(client, "search_emails", {"subject": "faktura"})
     msg = res.structured_content["messages"][-1]
     assert (msg["uid"], msg["subject"], msg["unread"]) == (1, "Faktura za říjen", False)
-    assert msg["from"] == ["Petr Novák <petr@example.cz>"]
+    assert msg["from"] == ["Petr Novák <petr@example.cz>"] and msg["attachments"] == 1
+
+    res = await call(client, "search_emails", {"has_attachment": True})
+    assert [m["uid"] for m in res.structured_content["messages"]] == [1]
 
     res = await call(client, "read_email", {"uid": 1})
     data = res.structured_content

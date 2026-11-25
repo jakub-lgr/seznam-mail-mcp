@@ -277,3 +277,41 @@ async def test_send_daily_limit(monkeypatch, client):
     res = await call(server, "send_email", args)
     assert res.is_error and "limit" in res.content[0].text
     assert len(FakeSMTP.sent) == 2
+
+
+# ------------------------------------------------------------ fixes after the first live test
+
+
+def test_clean_text_drops_binary_noise_keeps_languages():
+    text, dropped = attachments.clean_text(
+        "Vyúčtování\nCelkem: 49,90 €\nДоговір оренди\n\x01ÿĀ漢字ꙮ⣿⣿⣿⣷⣄⡀⢀⣤⣶\nkůň"
+    )
+    assert text == "Vyúčtování\nCelkem: 49,90 €\nДоговір оренди\nkůň" and dropped == 1
+
+
+def test_count_attachments_from_bodystructure():
+    from .test_mail import bodystructure, parse
+
+    raw = with_attachments(("a.pdf", "application/pdf", b"%PDF"), ("b.png", "image/png", make_png(10, 10)))
+    assert mail.count_attachments(bodystructure(parse(raw))) == 2
+    assert mail.count_attachments(bodystructure(parse(with_attachments()))) == 0
+    assert mail.count_attachments(None) == 0
+
+
+async def test_move_finds_new_uid_without_copyuid(monkeypatch, client):
+    original = FakeIMAP.move
+
+    def move_without_copyuid(self, uids, folder):
+        original(self, uids, folder)
+        return b"Move completed"  # Seznam's COPYUID arrives untagged and is lost
+
+    monkeypatch.setattr(FakeIMAP, "move", move_without_copyuid)
+    res = await call(client, "trash_emails", {"uids": [2]})
+    assert res.structured_content["moved"] == [{"uid": 2, "new_uid": 100}]
+
+
+async def test_has_attachment_scan_note(monkeypatch, client):
+    monkeypatch.setattr(mail, "ATTACHMENT_SCAN_LIMIT", 1)
+    res = await call(client, "search_emails", {"has_attachment": True})
+    data = res.structured_content
+    assert data["messages"] == [] and "jen u 1" in data["note"]  # newest (uid 2) has none, uid 1 not scanned

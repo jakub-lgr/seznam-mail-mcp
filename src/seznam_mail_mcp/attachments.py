@@ -130,6 +130,7 @@ def _pdf(data: bytes) -> Extracted:
         raise AttachmentError(f"PDF nejde otevřít: {e}") from e
 
     out = Extracted(kind="pdf", pages=total)
+    dropped = 0
     parts = []
     textless: list[int] = []  # 0-based pages without a text layer (scans, photos)
     for i, page in enumerate(reader.pages[:MAX_PDF_PAGES]):
@@ -137,6 +138,8 @@ def _pdf(data: bytes) -> Extracted:
             text = (page.extract_text() or "").strip()
         except Exception:  # broken page content stream
             text = ""
+        text, n = clean_text(text)
+        dropped += n
         if len(text) < MIN_PAGE_TEXT:
             textless.append(i)
         if text:
@@ -144,6 +147,8 @@ def _pdf(data: bytes) -> Extracted:
     out.text = "\n\n".join(parts)
     if total > MAX_PDF_PAGES:
         out.notes.append(f"Přečteno jen prvních {MAX_PDF_PAGES} z {total} stran.")
+    if dropped:
+        out.notes.append(f"Vynecháno {dropped} řádků nečitelných znaků (QR kódy, čárové kódy, vložená binární data).")
 
     # Scanned pages: render the first few as images so the model can read them.
     if textless:
@@ -157,6 +162,32 @@ def _pdf(data: bytes) -> Extracted:
                 note += f" Dalších {len(textless) - len(rendered)} stran bez textu jsem nepřiložil."
             out.notes.append(note)
     return out
+
+
+# Latin (incl. Czech), Greek, Cyrillic, general punctuation, currency (€). Binary garbage from
+# QR codes and embedded data decodes mostly to symbols, braille and CJK, which count as noise.
+_READABLE_RANGES = ((0x20, 0x530), (0x2000, 0x20CF), (0x2100, 0x215F))
+_CONTROL = {chr(c) for c in range(32)} - {"\n", "\t"}
+
+
+def _is_noise(line: str) -> bool:
+    stripped = line.strip()
+    if len(stripped) < 6:
+        return False
+    readable = sum(1 for ch in stripped if ch.isspace() or any(lo <= ord(ch) <= hi for lo, hi in _READABLE_RANGES))
+    return readable / len(stripped) < 0.7
+
+
+def clean_text(text: str) -> tuple[str, int]:
+    """Drop control characters and lines that are mostly binary garbage. Returns (text, dropped lines)."""
+    text = "".join(ch for ch in text if ch not in _CONTROL and ch != "\ufffd")
+    kept, dropped = [], 0
+    for line in text.splitlines():
+        if _is_noise(line):
+            dropped += 1
+        else:
+            kept.append(line)
+    return "\n".join(kept).strip(), dropped
 
 
 def _render_pdf_pages(data: bytes, pages: list[int]) -> list[tuple[bytes, str]]:

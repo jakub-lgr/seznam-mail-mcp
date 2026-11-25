@@ -50,7 +50,8 @@ def _instructions(options: ToolOptions) -> str:
     if options.enable_organize:
         lines.append(
             "- Organizace (mark_emails, move_emails, trash_emails) jen na pokyn uživatele. "
-            "Mazání znamená přesun do Koše, trvale nic nemažeš."
+            "Mazání znamená přesun do Koše, trvale nic nemažeš. Když má být přečtený e-mail "
+            "označený jako přečtený, zavolej po read_email mark_emails s read=true."
         )
     if options.enable_send:
         lines.append(
@@ -168,6 +169,7 @@ def build_server(resolve_account: AccountResolver, options: ToolOptions | None =
         before: Annotated[str | None, Field(description="Před datem (bez něj), RRRR-MM-DD")] = None,
         unread_only: bool = False,
         flagged_only: bool = False,
+        has_attachment: Annotated[bool, Field(description="Jen e-maily s přílohou")] = False,
         limit: Annotated[int, Field(ge=1, le=50, description="Max. počet výsledků (nejnovější první)")] = 20,
     ) -> dict[str, Any]:
         """Hledá e-maily ve složce. Vrací hlavičky (datum, odesílatel, předmět, uid), nejnovější první.
@@ -189,6 +191,7 @@ def build_server(resolve_account: AccountResolver, options: ToolOptions | None =
             before=_parse_date(before, "before"),
             unread_only=unread_only,
             flagged_only=flagged_only,
+            has_attachment=has_attachment,
         )
 
     @server.tool(annotations=READ_ONLY)
@@ -200,7 +203,8 @@ def build_server(resolve_account: AccountResolver, options: ToolOptions | None =
     ) -> dict[str, Any]:
         """Přečte jeden e-mail: hlavičky, text těla (HTML převedené na text) a seznam příloh s indexy pro read_attachment.
 
-        Neoznačí ho jako přečtený."""
+        Neoznačí ho jako přečtený (to udělá mark_emails s read=true, pokud ho server nabízí).
+        Které e-maily četl uživatel naposledy, server neví: v hledání je jen příznak unread."""
         account = await resolve_account(ctx)
         result = await _run(mail.read_message, account, folder, uid, max_chars)
         return {"notice": UNTRUSTED_NOTICE, **result}

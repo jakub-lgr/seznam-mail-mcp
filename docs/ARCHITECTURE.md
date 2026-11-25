@@ -136,6 +136,11 @@ Backend se volí proměnnou `DATABASE_URL`:
   když ID obsahuje `{`. Vlákna se proto sestavují lokálně z hlaviček kandidátů
   nalezených podle slov z předmětu.
 - Podporované rozšíření hledání: `SORT`, `I18NLEVEL=1`. `THREAD` ani `ESEARCH` nejsou.
+- FROM/TO/SUBJECT se hledají po slovech (každé slovo zvlášť, bez interpunkce jako `[` `]`),
+  protože Seznam porovnává celá slova.
+- Po `UID MOVE` posílá Seznam `COPYUID` v netagované odpovědi, kterou IMAPClient nevrátí.
+  Nové UID se proto dohledává v cílové složce podle Message-ID.
+- Hledání podle příloh IMAP nemá: `has_attachment` čte `BODYSTRUCTURE` nejnovějších 500 výsledků.
 
 ## Datový model
 
